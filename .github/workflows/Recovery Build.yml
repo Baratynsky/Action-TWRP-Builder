@@ -59,7 +59,7 @@ jobs:
 
     - name: Configure Git SSH (if needed)
       if: |
-        startsWith(github.event.inputs.MANIFEST_URL, 'git@') || \
+        startsWith(github.event.inputs.MANIFEST_URL, 'git@') ||
         startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@')
       uses: webfactory/ssh-agent@v0.9.0
       with:
