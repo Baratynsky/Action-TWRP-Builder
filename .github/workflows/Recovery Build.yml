@@ -104,5 +104,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: ${{ github.event.inputs.BUILD_TARGET }}
-        path:
-          - workspace/out/target/product/moon/${{ github.event.inputs.BUILD_TARGET }}.img
+        path: workspace/out/target/product/moon/${{ github.event.inputs.BUILD_TARGET }}.img
