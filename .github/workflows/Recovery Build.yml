@@ -1,107 +1,176 @@
-name: Build Recovery (VendorBoot)
+name: Recovery Build
 
 on:
   workflow_dispatch:
     inputs:
       MANIFEST_URL:
-        description: 'AOSP manifest URL (SSH or HTTPS)'
+        description: 'MANIFEST_URL (if want to use SSH keys, use git@github.com:XXXXX)'
         required: true
         default: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp'
       MANIFEST_BRANCH:
-        description: 'Manifest branch (e.g., twrp-12.1)'
+        description: 'MANIFEST_BRANCH'
         required: true
         default: 'twrp-12.1'
       DEVICE_TREE_URL:
-        description: 'Git URL for device tree (SSH or HTTPS)'
+        description: 'DEVICE_TREE_URL'
         required: true
-        default: 'https://github.com/MayuriLabs/recovery_device_xiaomi_moon'
+        default: 'https://github.com/TeamWin/android_device_asus_I003D'
       DEVICE_TREE_BRANCH:
-        description: 'Device tree branch'
+        description: 'DEVICE_TREE_BRANCH'
         required: true
-        default: 'main'
+        default: 'android-12.1'
       DEVICE_PATH:
-        description: 'Path to device tree in workspace'
+        description: 'DEVICE_PATH'
         required: true
-        default: 'device/xiaomi/moon'
-      MAKE_TARGET:
-        description: 'Make target for lunch (e.g., twrp_moon-eng)'
+        default: 'device/asus/I003D'
+      COMMON_TREE_URL:
+        description: 'COMMON_TREE_URL (if no common tree, leave blank)'
+        required: false
+      COMMON_PATH:
+        description: 'COMMON_PATH (if no common tree, leave blank)'
+        required: false
+      DEVICE_NAME:
+        description: 'DEVICE_NAME'
         required: true
-        default: 'twrp_moon-eng'
+        default: 'I003D'
+      MAKEFILE_NAME:
+        description: 'MAKEFILE_NAME'
+        required: true
+        default: 'twrp_I003D'
       BUILD_TARGET:
-        description: 'Build target (e.g., vendorbootimage)'
+        description: 'BUILD_TARGET'
         required: true
-        default: 'vendorbootimage'
+        default: 'recovery'
 
 jobs:
   build:
+    if: github.event.repository.owner.id == github.event.sender.id
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-
     steps:
-    - name: Checkout repository
+    - name: Display Run Parameters
+      run: |
+        echo "::group::User Environment Variables"
+        echo "Manifest URL: ${{ github.event.inputs.MANIFEST_URL }}"
+        echo "Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}"
+        echo "Device Tree URL: ${{ github.event.inputs.DEVICE_TREE_URL }}"
+        echo "Device Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
+        echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
+        echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
+        echo "Makefile Name: ${{ github.event.inputs.MAKEFILE_NAME }}"
+        echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
+        echo "::endgroup::"
+
+    # You might want to Checkout your repo first, but not mandatory
+    - name: Check Out
       uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        sudo apt update && sudo apt install -y \
-          bc bison build-essential ccache curl flex \
-          git gnupg gperf imagemagick lib32ncurses-dev \
-          liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev \
-          libxml2-utils lzop openjdk-11-jdk pngcrush rsync schedtool \
-          squashfs-tools xsltproc zip zlib1g-dev repo
+    # Cleanup The Actions Workspace Using Custom Composite Run Actions
+    - name: Cleanup
+      uses: rokibhasansagar/slimhub_actions@main
+      # That's it! Now use your normal steps
 
-    - name: Setup Java
+    - name: Prepare the environment
+      run: |
+        sudo apt update && sudo apt upgrade -y
+        DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
+            linux-modules-extra-$(uname -r) \
+            gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib \
+            libc6-dev lib32ncurses-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils \
+            xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses-dev libsdl1.2-dev \
+            build-essential libgtk-3-dev libglu1-mesa-dev freeglut3-dev git libxml2 lzop pngcrush schedtool squashfs-tools \
+            imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libncurses6 python3 tar
+
+    - name: Install OpenJDK
       uses: actions/setup-java@v4
       with:
         distribution: 'zulu'
         java-version: '11'
 
-    - name: Configure Git SSH (if needed)
-      if: |
-        startsWith(github.event.inputs.MANIFEST_URL, 'git@') ||
-        startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@')
+    - name: Setup SSH Keys
+      if: ${{ startsWith(github.event.inputs.MANIFEST_URL, 'git@github.com') || 
+          startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com') ||
+          startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com') }}
       uses: webfactory/ssh-agent@v0.9.0
       with:
-        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          ssh-private-key: |
+            ${{ secrets.SSH_PRIVATE_KEY }}
 
-    - name: Install repo tool
+    - name: Install repo
       run: |
-        mkdir -p ~/bin
-        curl -sS https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        mkdir ~/bin
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
         chmod a+x ~/bin/repo
-        sudo mv ~/bin/repo /usr/local/bin/
+        sudo ln -sf ~/bin/repo /usr/bin/repo
 
-    - name: Initialize AOSP repo
-      id: init
+    - name: Initialize repo
       run: |
-        mkdir workspace && cd workspace
+        mkdir workspace
+        cd workspace
+        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
+        git config --global user.name "Nico170420"
+        git config --global user.email "b170420nc@gmail.com"
         repo init --depth=1 -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }}
-        echo "WORKDIR=$(pwd)" >> $GITHUB_OUTPUT
+      id: pwd
 
-    - name: Sync AOSP tree
-      run: repo sync -c -j$(nproc) --force-sync
-      working-directory: ${{ steps.init.outputs.WORKDIR }}
+    - name: Repo Sync
+      run: |
+        repo sync -j$(nproc --all) --force-sync
+      working-directory: workspace
 
     - name: Clone device tree
       run: |
-        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} \
-          ${{ steps.init.outputs.WORKDIR }}/${{ github.event.inputs.DEVICE_PATH }}
+        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-    - name: Setup environment
+    - name: Clone common tree
+      if: |
+        github.event.inputs.COMMON_TREE_URL != null
+        && github.event.inputs.COMMON_PATH != null
       run: |
-        cd ${{ steps.init.outputs.WORKDIR }}
+        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Check Build Tree
+      uses: haya14busa/action-cond@v1
+      id: buildtree
+      with:
+        cond: ${{ github.event.inputs.MANIFEST_BRANCH == 'twrp-11' || github.event.inputs.MANIFEST_BRANCH == 'twrp-12.1' }}
+        if_true: twrp
+        if_false: omni
+
+    - name: Sync Device Dependencies
+      run: |
+        bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/${{ steps.buildtree.outputs.value }}.dependencies
+        repo sync -j$(nproc --all)
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      continue-on-error: true
+
+    - name: Set Swap Space
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 12
+
+    - name: Building recovery
+      run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
+        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng && make clean && make ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-    - name: Build VendorBoot Image
-      run: |
-        cd ${{ steps.init.outputs.WORKDIR }}
-        lunch ${{ github.event.inputs.MAKE_TARGET }}
-        mka ${{ github.event.inputs.BUILD_TARGET }} -j$(nproc)
-
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
+    - name: Upload to Release
+      uses: softprops/action-gh-release@v2
       with:
-        name: ${{ github.event.inputs.BUILD_TARGET }}
-        path: workspace/out/target/product/moon/${{ github.event.inputs.BUILD_TARGET }}.img
+        files: | 
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*vendor*.img
+        name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
+        tag_name: ${{ github.run_id }}
+        body: |
+          Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
+          Device: ${{ github.event.inputs.DEVICE_NAME }}
+          Target: ${{ github.event.inputs.BUILD_TARGET }}.img
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
